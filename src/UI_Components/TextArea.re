@@ -466,11 +466,6 @@ let%component make =
   };
 
   let paste = (currentValue, currentCursorPosition) => {
-    let (value, cursorPosition) =
-      switch (state.selectStart) {
-      | Some(pos) => removeBetween(value, pos, cursorPosition)
-      | None => (value, cursorPosition)
-      };
     switch (Sdl2.Clipboard.getText()) {
     | None => ()
     | Some(data) =>
@@ -570,6 +565,11 @@ let%component make =
       Focus.loseFocus();
     } else if (code == Keycode.v) {
       if (Environment.isMac && super || !Environment.isMac && ctrl) {
+        let (value, cursorPosition) =
+          switch (state.selectStart) {
+          | Some(pos) => removeBetween(value, pos, cursorPosition)
+          | None => (value, cursorPosition)
+          };
         paste(value, cursorPosition);
       };
     } else if (code == Keycode.c) {
