@@ -36,55 +36,70 @@ let nextNonWhitespace = (str, from) =>
     str,
   );
 
+module IntMap = Map.Make(Int);
+
 module type Config = {
   let measure: string => float;
   let lineHeight: float;
   let forceWrap: bool;
 };
 
+module Row = {
+  type t = {
+    start: int,
+    yOffset: float,
+    xOffsets: list(float),
+  };
+
+  let equal = (a, b) =>
+    a.start == b.start
+    && Float.equal(a.yOffset, b.yOffset)
+    && List.for_all2(Float.equal, a.xOffsets, b.xOffsets);
+
+  let toString = ({start, yOffset, xOffsets}) => {
+    let xs = List.fold_left(Printf.sprintf("%s%.2f "), "", xOffsets);
+    Printf.sprintf(
+      "start = %i; yOffset = %.2f; xOffsets = %s",
+      start,
+      yOffset,
+      xs,
+    );
+  };
+
+  let nearestPosition = (t, xOffset) => {
+    let rec loop = (i, last_offset) =>
+      fun
+      | [] => i
+      | [h, ...t] =>
+        /* if (Float.(h > xOffset)) { */
+        /* if (Float.(h - xOffset < xOffset - last_offset)) { */
+        if (Float.compare(h, xOffset) == 1) {
+          if (Float.compare(h -. xOffset, xOffset -. last_offset) == (-1)) {
+            i + 1;
+          } else {
+            i;
+          };
+        } else {
+          loop(i + 1, h, t);
+        };
+    loop(0, 0., t.xOffsets) + t.start;
+  };
+};
+
+type t = IntMap.t(Row.t);
+
 module type S = {
   let measure: string => float;
   let lineHeight: float;
   let forceWrap: bool;
 
-  module Row: {
-    type t = {
-      start: int,
-      yOffset: float,
-      xOffsets: list(float),
-    };
-
-    let equal: (t, t) => bool;
-    let toString: t => string;
-    let nearestPosition: (t, Float.t) => int;
-  };
-
-  module IntMap: Map.S with type key = int;
-  type t = IntMap.t(Row.t);
-
-  let toString:
-    (
-      (
-        IntMap.key,
-        'a,
-        (~init: string, ~f: (~key: int, ~data: Row.t, string) => string) => 'b,
-        ~init: string,
-        ~f: (~key: int, ~data: Row.t, string) => string
-      ) =>
-      'b,
-      IntMap.t('a),
-      (~init: string, ~f: (~key: int, ~data: Row.t, string) => string) => 'b
-    ) =>
-    'b;
-  let build:
-    (~fromRow: IntMap.key=?, ~fromPos: int=?, float, string) =>
-    IntMap.t(Row.t);
-  let rowStartOfPosition: (IntMap.t(Row.t), int) => option((int, int));
-  let update:
-    (~old: IntMap.t(Row.t), ~from: int, float, string) => IntMap.t(Row.t);
+  let toString: t => string;
+  let build: (~fromRow: IntMap.key=?, ~fromPos: int=?, float, string) => t;
+  let rowStartOfPosition: (t, int) => option((int, int));
+  let refresh: (~old: t, ~from: int, float, string) => t;
   let nearestPosition: (t, float, float) => option(int);
-  let findPosition: (IntMap.t(Row.t), int) => (int, float, float);
-  let maxXOffset: IntMap.t(Row.t) => float;
+  let findPosition: (t, int) => (int, float, float);
+  let maxXOffset: t => float;
   let maxYOffset: t => float;
   let rowWidths: t => list(Row.t => float);
 };
@@ -94,54 +109,14 @@ module Make = (C: Config) : S => {
   let lineHeight = C.lineHeight;
   let forceWrap = C.forceWrap;
 
-  module Row = {
-    type t = {
-      start: int,
-      yOffset: float,
-      xOffsets: list(float),
-    };
-
-    let equal = (a, b) =>
-      a.start == b.start
-      && Float.equal(a.yOffset, b.yOffset)
-      && List.for_all2(Float.equal, a.xOffsets, b.xOffsets);
-
-    let toString = ({start, yOffset, xOffsets}) => {
-      let xs = List.fold_left(Printf.sprintf("%s%.2f "), "", xOffsets);
-      Printf.sprintf(
-        "start = %i; yOffset = %.2f; xOffsets = %s",
-        start,
-        yOffset,
-        xs,
-      );
-    };
-
-    let nearestPosition = (t, xOffset) => {
-      let rec loop = (i, last_offset) =>
-        fun
-        | [] => i
-        | [h, ...t] =>
-          /* if (Float.(h > xOffset)) { */
-          /* if (Float.(h - xOffset < xOffset - last_offset)) { */
-          if (Float.compare(h, xOffset) == 1) {
-            if (Float.compare(h -. xOffset, xOffset -. last_offset) == (-1)) {
-              i + 1;
-            } else {
-              i;
-            };
-          } else {
-            loop(i + 1, h, t);
-          };
-      loop(0, 0., t.xOffsets) + t.start;
-    };
-  };
-
   module IntMap = Map.Make(Int);
-  type t = IntMap.t(Row.t);
 
   let toString = m =>
-    IntMap.fold(m, ~init="\n", ~f=(~key, ~data, acc) =>
-      Printf.sprintf("%srow %i -> %s\n", acc, key, Row.toString(data))
+    IntMap.fold(
+      (key, data, acc) =>
+        Printf.sprintf("%srow %i -> %s\n", acc, key, Row.toString(data)),
+      m,
+      "\n",
     );
 
   let build = (~fromRow=0, ~fromPos=1, margin, text) => {
@@ -199,7 +174,6 @@ module Make = (C: Config) : S => {
                   };
                 Float.(
                   measure(
-                    /* pad ++ String.slice(text, rowStart, lookahead), */
                     pad ++ String.sub(text, rowStart, lookahead - rowStart),
                   )
                   > margin
@@ -234,7 +208,7 @@ module Make = (C: Config) : S => {
     listFindMapi(~f, IntMap.bindings(t));
   };
 
-  let update = (~old, ~from, margin, text) => {
+  let refresh = (~old, ~from, margin, text) => {
     let (i, start) =
       Option.value(~default=(0, 0), rowStartOfPosition(old, from));
     let fresh = build(~fromRow=i, ~fromPos=start + 1, margin, text);
@@ -269,9 +243,6 @@ module Make = (C: Config) : S => {
       | (None, Some(_)) => last_row
       | (None, None) => None
       };
-    /* Option.map(findRow(None, 0), ~f=row => */
-    /*   Row.nearestPosition(row, xOffset) */
-    /* ); */
     Option.map(row => Row.nearestPosition(row, xOffset), findRow(None, 0));
   };
 
@@ -300,23 +271,15 @@ module Make = (C: Config) : S => {
   let maxXOffset = t => {
     let f = (_, {xOffsets, _}: Row.t, m) =>
       Float.max(m, List.fold_left(Float.max, 0., xOffsets));
-    /* IntMap.fold(t, ~init=0., ~f); */
     IntMap.fold(f, t, 0.);
   };
 
   let maxYOffset = (t: t) => {
-    /* Option.value_map(IntMap.max_binding(t), ~default=0., ~f=((_, row)) => */
-    /*   row.yOffset */
     switch (IntMap.max_binding_opt(t)) {
     | Some((_, row)) => row.yOffset
     | None => 0.
     };
   };
-
-  /* let rowWidths = (t: t) => */
-  /*   List.map(Map.data(t), ~f=({xOffsets, _}) => */
-  /*     List.fold(~init=0., ~f=Float.max, xOffsets) */
-  /*   ); */
 
   let rowWidths = (t: t) =>
     Seq.map(
