@@ -6,11 +6,19 @@ open Revery_Font;
 
 module Hooks = Revery_UI_Hooks;
 
-/* Workaround for Revery text wrapping not working exactly as I'd like.
- * - spaces inserted following newlines on empty rows to prevent collapse
- * - zero width unicodes inserted before leading spaces
- * - spaces which triggered a wrap are replaced by newlines
- * - row starts preceded by non-whitespace (forced break) get a newline */
+let floatClampExn = (~min, ~max, a) => {
+  if (min > max) {
+    failwith("floatClampExn requires [min <= max]");
+  };
+  if (Float.compare(min, a) > 0) {
+    min;
+  } else if (Float.compare(max, a) < 0) {
+    max;
+  } else {
+    a;
+  };
+};
+
 module CharSet = Set.Make(Char);
 
 let endChars =
@@ -20,7 +28,7 @@ let charsToNextWordEnd = str => {
   let len = String.length(str);
   if (len > 0) {
     let rec loop = i =>
-      if (i == len || Set.mem(end_chars, str.[i])) {
+      if (i == len || CharSet.mem(str.[i], endChars)) {
         i;
       } else {
         loop(i + 1);
@@ -36,7 +44,7 @@ let charsToPreviousWordEnd = str => {
   if (len > 0) {
     let sub_len = len - 1;
     let rec loop = i =>
-      if (i == len || Set.mem(end_chars, str.[sub_len - i])) {
+      if (i == len || CharSet.mem(str.[sub_len - i], endChars)) {
         i;
       } else {
         loop(i + 1);
@@ -48,10 +56,10 @@ let charsToPreviousWordEnd = str => {
 };
 
 let removeWordBefore = (text, cursor_position) => {
-  open Revery.UI.Components.Input;
+  open Input;
   let (before, after) = getStringParts(cursor_position, text);
   if (String.length(before) > 0) {
-    let next_position = cursor_position - chars_to_previous_word_end(before);
+    let next_position = cursor_position - charsToPreviousWordEnd(before);
     let new_text = Str.string_before(before, next_position) ++ after;
     (new_text, next_position);
   } else {
@@ -60,11 +68,11 @@ let removeWordBefore = (text, cursor_position) => {
 };
 
 let removeWordAfter = (text, cursor_position) => {
-  open Revery.UI.Components.Input;
+  open Input;
   let (before, after) = getStringParts(cursor_position, text);
   let new_text =
     if (String.length(after) > 0) {
-      Str.string_after(after, chars_to_next_word_end(after));
+      Str.string_after(after, charsToNextWordEnd(after));
     } else {
       before;
     };
@@ -89,7 +97,8 @@ let selectParts = (text, p1, p2) => {
       (p1, p2);
     };
   let before = Str.string_before(text, first);
-  let selected = String.slice(text, first, last);
+  /* let selected = String.slice(text, first, last); */
+  let selected = String.sub(text, first, last - first);
   let after = Str.string_after(text, last);
   (before, selected, after);
 };
@@ -101,7 +110,8 @@ let copySelected = (text, p1, p2) => {
     } else {
       (p1, p2);
     };
-  Sdl2.Clipboard.setText(String.slice(text, first, last));
+  /* Sdl2.Clipboard.setText(String.slice(text, first, last)); */
+  Sdl2.Clipboard.setText(String.sub(text, first, last - first));
 };
 
 module Cursor = {
@@ -283,41 +293,42 @@ let%component make =
     });
 
   let verticalScroll =
-      (containerHeight, textHeight, line_height, y_offset, y_scroll) =>
-    Float.(
-      if (textHeight > containerHeight) {
-        let offset =
-          if (y_offset < y_scroll) {
-            y_offset;
-          } else if (y_offset + line_height - y_scroll > containerHeight) {
-            y_offset + line_height - containerHeight;
-          } else {
-            y_scroll;
-          };
-        /* Make sure all the space is used to show text (no overscroll). */
-        Float.clamp_exn(~min=0., ~max=textHeight -. containerHeight, offset);
-      } else {
-        0.;
-      }
-    );
+      (containerHeight, textHeight, lineHeight, yOffset, yScroll) =>
+    if (Float.compare(textHeight, containerHeight) > 0) {
+      let offset =
+        if (Float.compare(yOffset, yScroll) < 0) {
+          yOffset;
+        } else if (Float.compare(
+                     yOffset +. lineHeight -. yScroll,
+                     containerHeight,
+                   )
+                   > 0) {
+          yOffset +. lineHeight -. containerHeight;
+        } else {
+          yScroll;
+        };
+      /* Make sure all the space is used to show text (no overscroll). */
+      floatClampExn(~min=0., ~max=textHeight -. containerHeight, offset);
+    } else {
+      0.;
+    };
 
-  let horizontalScroll = (margin, textWidth, x_offset, x_scroll) =>
-    Float.(
-      if (textWidth > margin) {
-        let offset =
-          if (x_offset < x_scroll) {
-            x_offset;
-          } else if (x_offset - x_scroll > margin) {
-            x_offset - margin;
-          } else {
-            x_scroll;
-          };
-        /* Make sure all the space is used to show text (no overscroll). */
-        Float.clamp_exn(~min=0., ~max=textWidth -. margin, offset);
-      } else {
-        0.;
-      }
-    );
+  let horizontalScroll = (margin, textWidth, xOffset, xScroll) =>
+    if (Float.compare(textWidth, margin) > 0) {
+      let offset =
+        if (Float.compare(xOffset, xScroll) < 0) {
+          xOffset;
+          /* } else if (xOffset - xScroll > margin) { */
+        } else if (Float.compare(xOffset -. xScroll, margin) > 0) {
+          xOffset -. margin;
+        } else {
+          xScroll;
+        };
+      /* Make sure all the space is used to show text (no overscroll). */
+      floatClampExn(~min=0., ~max=textWidth -. margin, offset);
+    } else {
+      0.;
+    };
 
   let verticalNav = (~up, m: Offsets.t, startPosition) => {
     let (row, target_x, _) = Offsets.findPosition(m, startPosition);
@@ -337,9 +348,14 @@ let%component make =
     /* ); */
   };
 
+  /* Workaround for Revery text wrapping not working exactly as I'd like.
+   * - spaces inserted following newlines on empty rows to prevent collapse
+   * - zero width unicodes inserted before leading spaces
+   * - spaces which triggered a wrap are replaced by newlines
+   * - row starts preceded by non-whitespace (forced break) get a newline */
   let newlineHack = (offsets, text) => {
     let len = String.length(text);
-    let f = (acc, {start, xOffsets, _}: Offsets.Row.t) => {
+    let f = (acc, (_, {start, xOffsets, _}: Offsets.Row.t)) => {
       let before = Str.string_before(acc, start);
       let after = Str.string_after(acc, start);
       let spacer =
@@ -352,7 +368,11 @@ let%component make =
         };
       if (start > 1) {
         switch (text.[start - 1]) {
-        | ' ' => String.drop_suffix(before, 1) ++ "\n" ++ spacer ++ after
+        | ' ' =>
+          String.sub(before, 0, String.length(before) - 1)
+          ++ "\n"
+          ++ spacer
+          ++ after
         | '\n' => before ++ spacer ++ after
         | _ => before ++ "\n" ++ spacer ++ after
         };
@@ -360,7 +380,7 @@ let%component make =
         before ++ spacer ++ after;
       };
     };
-    List.fold(~f, ~init=text, List.rev(Map.data(offsets)));
+    List.fold_left(f, text, List.rev(Offsets.IntMap.bindings(offsets)));
   };
 
   let%hook (state, dispatch) =
