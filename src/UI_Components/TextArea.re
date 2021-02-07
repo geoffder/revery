@@ -55,28 +55,28 @@ let charsToPreviousWordEnd = str => {
   };
 };
 
-let removeWordBefore = (text, cursor_position) => {
+let removeWordBefore = (text, cursorPosition) => {
   open Input;
-  let (before, after) = getStringParts(cursor_position, text);
+  let (before, after) = getStringParts(cursorPosition, text);
   if (String.length(before) > 0) {
-    let next_position = cursor_position - charsToPreviousWordEnd(before);
+    let next_position = cursorPosition - charsToPreviousWordEnd(before);
     let new_text = Str.string_before(before, next_position) ++ after;
     (new_text, next_position);
   } else {
-    (after, cursor_position);
+    (after, cursorPosition);
   };
 };
 
-let removeWordAfter = (text, cursor_position) => {
+let removeWordAfter = (text, cursorPosition) => {
   open Input;
-  let (before, after) = getStringParts(cursor_position, text);
+  let (before, after) = getStringParts(cursorPosition, text);
   let new_text =
     if (String.length(after) > 0) {
       Str.string_after(after, charsToNextWordEnd(after));
     } else {
       before;
     };
-  (new_text, cursor_position);
+  (new_text, cursorPosition);
 };
 
 let removeBetween = (text, p1, p2) => {
@@ -97,7 +97,6 @@ let selectParts = (text, p1, p2) => {
       (p1, p2);
     };
   let before = Str.string_before(text, first);
-  /* let selected = String.slice(text, first, last); */
   let selected = String.sub(text, first, last - first);
   let after = Str.string_after(text, last);
   (before, selected, after);
@@ -110,7 +109,6 @@ let copySelected = (text, p1, p2) => {
     } else {
       (p1, p2);
     };
-  /* Sdl2.Clipboard.setText(String.slice(text, first, last)); */
   Sdl2.Clipboard.setText(String.sub(text, first, last - first));
 };
 
@@ -163,14 +161,39 @@ module Cursor = {
 type state = {
   value: string,
   cursorPosition: int,
+  selectStart: option(int),
+  offsets: OffsetMap.t,
 };
 
 type action =
-  | TextInput(string, int);
+  | TextInput(string, int)
+  | Move(int)
+  | MoveAndSelect(int, int)
+  | MoveAndUnselect(int)
+  | Select(int)
+  | Unselect;
 
-let reducer = (action, _state) =>
+let reducer = (action, state) =>
   switch (action) {
-  | TextInput(value, cursorPosition) => {value, cursorPosition}
+  | TextInput(value, cursorPosition) => {
+      value,
+      cursorPosition,
+      selectStart: None,
+      offsets: state.offsets // TODO: must refresh this. Give as param to update?
+    }
+  | Move(cursorPosition) => {...state, cursorPosition}
+  | MoveAndSelect(cursorPosition, pos) => {
+      ...state,
+      cursorPosition,
+      selectStart: Some(pos),
+    }
+  | MoveAndUnselect(cursorPosition) => {
+      ...state,
+      cursorPosition,
+      selectStart: None,
+    }
+  | Select(pos) => {...state, selectStart: Some(pos)}
+  | Unselect => {...state, selectStart: None}
   };
 
 module Constants = {
@@ -259,7 +282,6 @@ let%component make =
                 ~onChange=(_, _) => (),
                 ~value=?,
                 ~cursorPosition=?,
-                ~isPassword=false,
                 ~maxHeight=Int.max_int,
                 ~forceWrap=true,
                 (),
@@ -330,7 +352,7 @@ let%component make =
       0.;
     };
 
-  let verticalNav = (~up, m: Offsets.t, startPosition) => {
+  let verticalNav = (~up, m: OffsetMap.t, startPosition) => {
     let (row, target_x, _) = Offsets.findPosition(m, startPosition);
     let target_row =
       if (up) {
@@ -339,13 +361,10 @@ let%component make =
         row + 1;
       };
 
-    switch (Offsets.IntMap.find_opt(target_row, m)) {
-    | Some(row) => Offsets.Row.nearestPosition(row, target_x)
+    switch (OffsetMap.IntMap.find_opt(target_row, m)) {
+    | Some(row) => OffsetMap.Row.nearestPosition(row, target_x)
     | None => startPosition
     };
-    /* Option.value_map(Map.find(m, target_row), ~default=startPosition, ~f=row => */
-    /*   Offsets.Row.nearestPosition(row, target_x) */
-    /* ); */
   };
 
   /* Workaround for Revery text wrapping not working exactly as I'd like.
@@ -355,7 +374,7 @@ let%component make =
    * - row starts preceded by non-whitespace (forced break) get a newline */
   let newlineHack = (offsets, text) => {
     let len = String.length(text);
-    let f = (acc, (_, {start, xOffsets, _}: Offsets.Row.t)) => {
+    let f = (acc, (_, {start, xOffsets, _}: OffsetMap.Row.t)) => {
       let before = Str.string_before(acc, start);
       let after = Str.string_after(acc, start);
       let spacer =
@@ -380,16 +399,197 @@ let%component make =
         before ++ spacer ++ after;
       };
     };
-    List.fold_left(f, text, List.rev(Offsets.IntMap.bindings(offsets)));
+    List.fold_left(f, text, List.rev(OffsetMap.IntMap.bindings(offsets)));
   };
 
-  let%hook (state, dispatch) =
+  // TODO: This needs to be obtained from the textNodes parent container width.
+  // So the textRef hook will have to go above this, and this will be calculated
+  // from it.
+  let margin = 100.;
+
+  let%hook (state, dispatch) = {
+    let value = Option.value(value, ~default="");
     Hooks.reducer(
       ~initialState={
-        value: Option.value(value, ~default=""),
+        value,
         cursorPosition: Option.value(cursorPosition, ~default=0),
+        selectStart: None,
+        offsets: Offsets.build(margin, value),
       },
       reducer,
     );
+  };
+
+  let%hook textRef = Hooks.ref(None);
+  let%hook xScrollOffset = Hooks.ref(0);
+  let%hook yScrollOffset = Hooks.ref(0);
+
+  let color =
+    Selector.select(style, Color, Some(Colors.black)) |> Option.get;
+
+  let value = Option.value(value, ~default=state.value);
+  let showPlaceholder = value == "";
+  let cursorPosition =
+    Option.value(cursorPosition, ~default=state.cursorPosition)
+    |> min(String.length(value));
+
+  let%hook clickableRef = Hooks.ref(None);
+  let isFocused = () => {
+    switch (clickableRef^) {
+    | Some(node) => Focus.isFocused(node)
+    | None => false
+    };
+  };
+
+  let%hook (cursorOpacity, resetCursor) =
+    Cursor.use(~interval=Time.ms(500), ~isFocused=isFocused());
+
+  let handleFocus = () => {
+    resetCursor();
+    onFocus();
+    Sdl2.TextInput.start();
+  };
+
+  let handleBlur = () => {
+    resetCursor();
+    onBlur();
+    Sdl2.TextInput.stop();
+  };
+
+  // TODO:This ought to be in the reducer, but since reducer calls are deferred
+  // the ordering of side-effects can't be guaranteed.
+  //
+  // Refactor when https://github.com/briskml/brisk-reconciler/issues/54 has been fixed
+  let update = (value, cursorPosition) => {
+    onChange(value, cursorPosition);
+    dispatch(TextInput(value, cursorPosition));
+  };
+
+  let paste = (currentValue, currentCursorPosition) => {
+    let (value, cursorPosition) =
+      switch (state.selectStart) {
+      | Some(pos) => removeBetween(value, pos, cursorPosition)
+      | None => (value, cursorPosition)
+      };
+    switch (Sdl2.Clipboard.getText()) {
+    | None => ()
+    | Some(data) =>
+      let (newValue, newCursorPosition) =
+        Input.insertString(currentValue, data, currentCursorPosition);
+      update(newValue, newCursorPosition);
+    };
+  };
+
+  let handleTextInput = (event: NodeEvents.textInputEventParams) => {
+    resetCursor();
+    let (value, cursorPosition) =
+      switch (state.selectStart) {
+      | Some(pos) => removeBetween(value, pos, cursorPosition)
+      | None => (value, cursorPosition)
+      };
+    let (value, cursorPosition) =
+      Input.insertString(value, event.text, cursorPosition);
+    update(value, cursorPosition);
+  };
+
+  let navigate = (shift, newPosition) =>
+    if (shift) {
+      if (Option.is_none(state.selectStart) && newPosition != cursorPosition) {
+        dispatch(MoveAndSelect(newPosition, cursorPosition));
+      } else {
+        dispatch(Move(newPosition));
+      };
+    } else {
+      dispatch(MoveAndUnselect(newPosition));
+    };
+
+  let handleKeyDown = (event: NodeEvents.keyEventParams) => {
+    open Key;
+
+    resetCursor();
+    onKeyDown(event);
+
+    let code = event.keycode;
+    let super = Sdl2.Keymod.isGuiDown(event.keymod);
+    let ctrl = Sdl2.Keymod.isControlDown(event.keymod);
+    let shift = Sdl2.Keymod.isShiftDown(event.keymod);
+
+    if (code == Keycode.left) {
+      let cursorPosition =
+        if (ctrl) {
+          let (before, _) = Input.getStringParts(cursorPosition, value);
+          cursorPosition - charsToPreviousWordEnd(before);
+        } else {
+          Input.getSafeStringBounds(value, cursorPosition, -1);
+        };
+      navigate(shift, cursorPosition);
+    } else if (code == Keycode.right) {
+      let cursorPosition =
+        if (ctrl) {
+          let (_, after) = Input.getStringParts(cursorPosition, value);
+          cursorPosition + charsToNextWordEnd(after);
+        } else {
+          Input.getSafeStringBounds(value, cursorPosition, 1);
+        };
+      navigate(shift, cursorPosition);
+    } else if (code == 1073741906) {
+      // Up
+      let cursorPosition =
+        verticalNav(~up=true, state.offsets, cursorPosition);
+      navigate(shift, cursorPosition);
+    } else if (code == 1073741905) {
+      // Down
+      let cursorPosition =
+        verticalNav(~up=false, state.offsets, cursorPosition);
+      navigate(shift, cursorPosition);
+    } else if (code == Keycode.delete) {
+      let (value, cursorPosition) =
+        switch (state.selectStart) {
+        | Some(pos) => removeBetween(value, pos, cursorPosition)
+        | None =>
+          if (ctrl) {
+            removeWordAfter(value, cursorPosition);
+          } else {
+            Input.removeCharacterAfter(value, cursorPosition);
+          }
+        };
+      update(value, cursorPosition);
+    } else if (code == Keycode.backspace) {
+      let (value, cursorPosition) =
+        switch (state.selectStart) {
+        | Some(pos) => removeBetween(value, pos, cursorPosition)
+        | None =>
+          if (ctrl) {
+            removeWordBefore(value, cursorPosition);
+          } else {
+            Input.removeCharacterBefore(value, cursorPosition);
+          }
+        };
+      update(value, cursorPosition);
+    } else if (code == Keycode.escape) {
+      Focus.loseFocus();
+    } else if (code == Keycode.v) {
+      if (Environment.isMac && super || !Environment.isMac && ctrl) {
+        paste(value, cursorPosition);
+      };
+    } else if (code == Keycode.c) {
+      if (Environment.isMac && super || !Environment.isMac && ctrl) {
+        Option.iter(
+          pos => copySelected(value, pos, cursorPosition),
+          state.selectStart,
+        );
+      };
+    } else if (code == Keycode.return && shift) {
+      let (value, cursorPosition) =
+        switch (state.selectStart) {
+        | Some(pos) => removeBetween(value, pos, cursorPosition)
+        | None => (value, cursorPosition)
+        };
+      let (value, cursorPosition) =
+        Input.insertString(value, "\n", cursorPosition);
+      update(value, cursorPosition);
+    };
+  };
+
   <View style={Styles.box(~style)} />;
 };
