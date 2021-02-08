@@ -162,7 +162,7 @@ type state = {
   value: string,
   cursorPosition: int,
   selectStart: option(int),
-  offsets: OffsetMap.t,
+  /* offsets: OffsetMap.t, */
 };
 
 type action =
@@ -179,7 +179,7 @@ let reducer = (action, state) =>
       value,
       cursorPosition,
       selectStart: None,
-      offsets: state.offsets // TODO: must refresh this. Give as param to update?
+      /* offsets: state.offsets // TODO: must refresh this. Give as param to update? */
     }
   | Move(cursorPosition) => {...state, cursorPosition}
   | MoveAndSelect(cursorPosition, pos) => {
@@ -307,13 +307,6 @@ let%component make =
     Revery_Draw.Text.lineHeight(~italic, fontFamily, fontSize, fontWeight);
   };
 
-  module Offsets =
-    OffsetMap.Make({
-      let measure = measureTextWidth;
-      let lineHeight = lineHeight;
-      let forceWrap = forceWrap;
-    });
-
   let verticalScroll =
       (containerHeight, textHeight, lineHeight, yOffset, yScroll) =>
     if (Float.compare(textHeight, containerHeight) > 0) {
@@ -353,7 +346,7 @@ let%component make =
     };
 
   let verticalNav = (~up, m: OffsetMap.t, startPosition) => {
-    let (row, target_x, _) = Offsets.findPosition(m, startPosition);
+    let (row, target_x, _) = OffsetMap.findPosition(m, startPosition);
     let target_row =
       if (up) {
         row - 1;
@@ -361,7 +354,7 @@ let%component make =
         row + 1;
       };
 
-    switch (OffsetMap.IntMap.find_opt(target_row, m)) {
+    switch (OffsetMap.find_opt(target_row, m)) {
     | Some(row) => OffsetMap.Row.nearestPosition(row, target_x)
     | None => startPosition
     };
@@ -380,8 +373,8 @@ let%component make =
       let spacer =
         if (List.length(xOffsets) == 0) {
           " ";
-        } else if (start < len && OffsetMap.isSpace(text.[start])) {
-          OffsetMap.zeroSpace;
+        } else if (start < len && OffsetMap.Utils.isSpace(text.[start])) {
+          OffsetMap.Utils.zeroSpace;
         } else {
           "";
         };
@@ -399,13 +392,8 @@ let%component make =
         before ++ spacer ++ after;
       };
     };
-    List.fold_left(f, text, List.rev(OffsetMap.IntMap.bindings(offsets)));
+    List.fold_left(f, text, List.rev(OffsetMap.bindings(offsets)));
   };
-
-  // TODO: This needs to be obtained from the textNodes parent container width.
-  // So the textRef hook will have to go above this, and this will be calculated
-  // from it.
-  let margin = 100.;
 
   let%hook (state, dispatch) = {
     let value = Option.value(value, ~default="");
@@ -414,15 +402,25 @@ let%component make =
         value,
         cursorPosition: Option.value(cursorPosition, ~default=0),
         selectStart: None,
-        offsets: Offsets.build(margin, value),
+        /* offsets: */
+        /*   OffsetMap.build( */
+        /*     ~forceWrap, */
+        /*     ~lineHeight, */
+        /*     ~margin, */
+        /*     ~measure=measureTextWidth, */
+        /*     value, */
+        /*   ), */
       },
       reducer,
     );
   };
 
   let%hook textRef = Hooks.ref(None);
-  let%hook xScrollOffset = Hooks.ref(0);
-  let%hook yScrollOffset = Hooks.ref(0);
+  let%hook xScrollOffset = Hooks.ref(0.);
+  let%hook yScrollOffset = Hooks.ref(0.);
+  let%hook xCursorOffset = Hooks.ref(0.);
+  let%hook yCursorOffset = Hooks.ref(0.);
+  let%hook offsets = Hooks.ref(OffsetMap.empty);
 
   let color =
     Selector.select(style, Color, Some(Colors.black)) |> Option.get;
@@ -443,6 +441,63 @@ let%component make =
 
   let%hook (cursorOpacity, resetCursor) =
     Cursor.use(~interval=Time.ms(500), ~isFocused=isFocused());
+
+  let updateOffsets = (~newValue=?, ~newCursor=?, ()) =>
+    switch (Option.bind(textRef^, n => n#getParent())) {
+    | Some(node) =>
+      let cursorPosition = {
+        let a = Option.value(~default=cursorPosition, newCursor);
+        let b = String.length(Option.value(~default=value, newValue));
+        a < b ? a : b;
+      };
+      let container: Dimensions.t = (node#measurements(): Dimensions.t);
+      let margin = Float.(of_int(container.width));
+      let offsets =
+        switch (newValue) {
+        | None =>
+          OffsetMap.build(
+            ~forceWrap,
+            ~lineHeight,
+            ~margin,
+            ~measure=measureTextWidth,
+            value,
+          )
+        | Some(v) =>
+          switch (OffsetMap.Utils.firstDiff(value, v)) {
+          | Some(from) =>
+            OffsetMap.refresh(
+              ~forceWrap,
+              ~lineHeight,
+              ~margin,
+              ~measure=measureTextWidth,
+              ~old=offsets^,
+              ~from,
+              v,
+            )
+          | None => offsets^
+          }
+        };
+      let (_, xOffset, yOffset) =
+        OffsetMap.findPosition(offsets, cursorPosition);
+      xScrollOffset :=
+        horizontalScroll(
+          margin -. measureTextWidth("_"),
+          OffsetMap.maxXOffset(offsets),
+          xOffset,
+          xScrollOffset^,
+        );
+      yScrollOffset :=
+        verticalScroll(
+          Float.of_int(container.height),
+          OffsetMap.maxYOffset(offsets) +. lineHeight,
+          lineHeight,
+          yOffset,
+          yScrollOffset^,
+        );
+      xCursorOffset := xOffset;
+      yCursorOffset := yOffset;
+    | None => ()
+    };
 
   let handleFocus = () => {
     resetCursor();
@@ -529,13 +584,11 @@ let%component make =
       navigate(shift, cursorPosition);
     } else if (code == 1073741906) {
       // Up
-      let cursorPosition =
-        verticalNav(~up=true, state.offsets, cursorPosition);
+      let cursorPosition = verticalNav(~up=true, offsets^, cursorPosition);
       navigate(shift, cursorPosition);
     } else if (code == 1073741905) {
       // Down
-      let cursorPosition =
-        verticalNav(~up=false, state.offsets, cursorPosition);
+      let cursorPosition = verticalNav(~up=false, offsets^, cursorPosition);
       navigate(shift, cursorPosition);
     } else if (code == Keycode.delete) {
       let (value, cursorPosition) =
