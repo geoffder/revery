@@ -86,14 +86,12 @@ module Row = {
   };
 
   let nearestPosition = (t, xOffset) => {
-    let rec loop = (i, last_offset) =>
+    let rec loop = (i, lastOffset) =>
       fun
       | [] => i
       | [h, ...t] =>
-        /* if (Float.(h > xOffset)) { */
-        /* if (Float.(h - xOffset < xOffset - last_offset)) { */
         if (Float.compare(h, xOffset) == 1) {
-          if (Float.compare(h -. xOffset, xOffset -. last_offset) == (-1)) {
+          if (Float.compare(h -. xOffset, xOffset -. lastOffset) == (-1)) {
             i + 1;
           } else {
             i;
@@ -129,7 +127,7 @@ let build =
   };
 
   let rec loop = (pos, row, rowStart, offsets, t) =>
-    /* zero_width character used in newline_hack to prevent leading space collapse */
+    /* zeroWidth character used in newlineHack to prevent leading space collapse */
     if (pos <= len) {
       let pad =
         if (Utils.isSpace(text.[rowStart])) {
@@ -158,14 +156,14 @@ let build =
                   ),
                   String.index_from_opt(text, next, '\n'),
                 ) {
-                | (Some(nextSpace), Some(next_break)) =>
-                  if (nextSpace <= next_break) {
+                | (Some(nextSpace), Some(nextBreak)) =>
+                  if (nextSpace <= nextBreak) {
                     nextSpace;
                   } else {
-                    next_break;
+                    nextBreak;
                   }
                 | (Some(nextSpace), None) => nextSpace
-                | (None, Some(next_break)) => next_break
+                | (None, Some(nextBreak)) => nextBreak
                 | _ => len
                 };
               Float.(
