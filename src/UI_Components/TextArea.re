@@ -112,52 +112,6 @@ let copySelected = (text, p1, p2) => {
   Sdl2.Clipboard.setText(String.sub(text, first, last - first));
 };
 
-module Cursor = {
-  type state = {
-    time: Time.t,
-    isOn: bool,
-  };
-
-  type action =
-    | Reset
-    | Tick(Time.t);
-
-  let use = (~interval, ~isFocused) => {
-    let%hook (state, dispatch) =
-      Hooks.reducer(
-        ~initialState={time: Time.zero, isOn: false}, (action, state) => {
-        switch (action) {
-        | Reset => {isOn: true, time: Time.zero}
-        | Tick(increasedTime) =>
-          let newTime = Time.(state.time + increasedTime);
-
-          /* if newTime is above the interval a `Tick` has passed */
-          newTime >= interval
-            ? {isOn: !state.isOn, time: Time.zero}
-            : {...state, time: newTime};
-        }
-      });
-
-    let%hook () =
-      Hooks.effect(
-        OnMount,
-        () => {
-          let clear =
-            Tick.interval(
-              ~name="Revery:Input:Cursor Blink Interval",
-              time => dispatch(Tick(time)),
-              Time.ms(16),
-            );
-          Some(clear);
-        },
-      );
-
-    let cursorOpacity = isFocused && state.isOn ? 1.0 : 0.0;
-
-    (cursorOpacity, () => dispatch(Reset));
-  };
-};
-
 type state = {
   value: string,
   cursorPosition: int,
@@ -179,7 +133,6 @@ let reducer = (action, state) =>
       value,
       cursorPosition,
       selectStart: None,
-      /* offsets: state.offsets // TODO: must refresh this. Give as param to update? */
     }
   | Move(cursorPosition) => {...state, cursorPosition}
   | MoveAndSelect(cursorPosition, pos) => {
@@ -402,14 +355,6 @@ let%component make =
         value,
         cursorPosition: Option.value(cursorPosition, ~default=0),
         selectStart: None,
-        /* offsets: */
-        /*   OffsetMap.build( */
-        /*     ~forceWrap, */
-        /*     ~lineHeight, */
-        /*     ~margin, */
-        /*     ~measure=measureTextWidth, */
-        /*     value, */
-        /*   ), */
       },
       reducer,
     );
@@ -440,7 +385,7 @@ let%component make =
   };
 
   let%hook (cursorOpacity, resetCursor) =
-    Cursor.use(~interval=Time.ms(500), ~isFocused=isFocused());
+    Input.Cursor.use(~interval=Time.ms(500), ~isFocused=isFocused());
 
   let updateOffsets = (~newValue=?, ~newCursor=?, ()) =>
     switch (Option.bind(textRef^, n => n#getParent())) {
@@ -452,44 +397,47 @@ let%component make =
       };
       let container: Dimensions.t = (node#measurements(): Dimensions.t);
       let margin = Float.(of_int(container.width));
-      let offsets =
-        switch (newValue) {
-        | None =>
-          OffsetMap.build(
-            ~forceWrap,
-            ~lineHeight,
-            ~margin,
-            ~measure=measureTextWidth,
-            value,
-          )
-        | Some(v) =>
-          switch (OffsetMap.Utils.firstDiff(value, v)) {
-          | Some(from) =>
-            OffsetMap.refresh(
+      offsets :=
+        (
+          switch (newValue) {
+          | None =>
+            // When no new value is supplied, rebuild the whole map. (e.g. changed margin)
+            OffsetMap.build(
               ~forceWrap,
               ~lineHeight,
               ~margin,
               ~measure=measureTextWidth,
-              ~old=offsets^,
-              ~from,
-              v,
+              value,
             )
-          | None => offsets^
+          | Some(v) =>
+            switch (OffsetMap.Utils.firstDiff(value, v)) {
+            | Some(from) =>
+              OffsetMap.refresh(
+                ~forceWrap,
+                ~lineHeight,
+                ~margin,
+                ~measure=measureTextWidth,
+                ~old=offsets^,
+                ~from,
+                v,
+              )
+            | None => offsets^
+            }
           }
-        };
+        );
       let (_, xOffset, yOffset) =
-        OffsetMap.findPosition(offsets, cursorPosition);
+        OffsetMap.findPosition(offsets^, cursorPosition);
       xScrollOffset :=
         horizontalScroll(
           margin -. measureTextWidth("_"),
-          OffsetMap.maxXOffset(offsets),
+          OffsetMap.maxXOffset(offsets^),
           xOffset,
           xScrollOffset^,
         );
       yScrollOffset :=
         verticalScroll(
           Float.of_int(container.height),
-          OffsetMap.maxYOffset(offsets) +. lineHeight,
+          OffsetMap.maxYOffset(offsets^) +. lineHeight,
           lineHeight,
           yOffset,
           yScrollOffset^,
@@ -560,9 +508,9 @@ let%component make =
     onKeyDown(event);
 
     let code = event.keycode;
-    let super = Sdl2.Keymod.isGuiDown(event.keymod);
-    let ctrl = Sdl2.Keymod.isControlDown(event.keymod);
-    let shift = Sdl2.Keymod.isShiftDown(event.keymod);
+    let super = Keymod.isGuiDown(event.keymod);
+    let ctrl = Keymod.isControlDown(event.keymod);
+    let shift = Keymod.isShiftDown(event.keymod);
 
     if (code == Keycode.left) {
       let cursorPosition =
