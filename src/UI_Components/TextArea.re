@@ -324,7 +324,7 @@ let%component make =
       let before = Str.string_before(acc, start);
       let after = Str.string_after(acc, start);
       let spacer =
-        if (List.length(xOffsets) == 0) {
+        if (OffsetMap.cardinal(xOffsets) == 0) {
           " ";
         } else if (start < len && OffsetMap.Utils.isSpace(text.[start])) {
           OffsetMap.Utils.zeroSpace;
