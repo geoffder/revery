@@ -119,6 +119,19 @@ type state = {
   offsets: OffsetMap.t,
 };
 
+type dragState = {
+  pos: int,
+  xScroll: float,
+  yScroll: float,
+  lastTime: Time.t,
+  shiftKey: bool,
+  startPos: int,
+  sceneOffsets: Offset.t,
+  maxXOffset: float,
+  maxYOffset: float,
+  textHeight: float,
+};
+
 type action =
   | TextInput(string, int, string => OffsetMap.t)
   | RebuiltOffsets(OffsetMap.t)
@@ -604,6 +617,99 @@ let%component make =
       Focus.focus(node);
     };
   };
+
+  let handleMouseMove =
+      (dragState, {mouseX, mouseY, _}: NodeEvents.mouseMoveEventParams) => {
+    let thisTime = Time.now();
+    if (Float.compare(
+          Time.(toFloatSeconds(thisTime - dragState.lastTime)),
+          16.,
+        )
+        == 1) {
+      let (_, xOffset, yOffset) =
+        OffsetMap.findPosition(state.offsets, dragState.pos);
+      let xScroll =
+        horizontalScroll(
+          containerWidth -. measureTextWidth("_"),
+          dragState.maxXOffset,
+          xOffset,
+          dragState.xScroll,
+        );
+
+      let yScroll =
+        verticalScroll(
+          containerHeight,
+          dragState.textHeight,
+          lineHeight,
+          yOffset,
+          dragState.yScroll,
+        );
+      let xTextOffset =
+        mouseX -. Float.of_int(dragState.sceneOffsets.left) +. xScroll;
+      let yTextOffset =
+        mouseY -. Float.of_int(dragState.sceneOffsets.top) +. yScroll;
+      let pos =
+        OffsetMap.nearestPosition(state.offsets, xTextOffset, yTextOffset)
+        |> Option.value(~default=String.length(value));
+      dispatch(Move(pos));
+      xScrollOffset := xScroll;
+      yScrollOffset := yScroll;
+      Some({...dragState, pos, xScroll, yScroll, lastTime: thisTime});
+    } else {
+      Some(dragState);
+    };
+  };
+
+  let handleMouseUp = ({pos, shiftKey, startPos, _}, _) => {
+    if (pos == startPos && !shiftKey) {
+      dispatch(Unselect);
+    };
+    None;
+  };
+
+  let%hook (captureMouse, captureState) =
+    Hooks.mouseCapture(
+      ~onMouseMove=handleMouseMove,
+      ~onMouseUp=handleMouseUp,
+      (),
+    );
+
+  let handleMouseDown =
+      ({shiftKey, mouseX, mouseY, _}: NodeEvents.mouseButtonEventParams) =>
+    switch (textRef^) {
+    | Some(node) =>
+      let sceneOffsets: Offset.t = node#getSceneOffsets();
+      let xTextOffset =
+        mouseX -. Float.of_int(sceneOffsets.left) +. xScrollOffset^;
+      let yTextOffset =
+        mouseY -. Float.of_int(sceneOffsets.top) +. yScrollOffset^;
+      let startPos =
+        OffsetMap.nearestPosition(state.offsets, xTextOffset, yTextOffset)
+        |> Option.value(~default=String.length(value));
+      let maxXOffset = OffsetMap.maxXOffset(state.offsets);
+      let maxYOffset = OffsetMap.maxYOffset(state.offsets);
+      let textHeight = maxYOffset +. lineHeight;
+
+      Option.iter(Focus.focus, clickableRef^);
+      captureMouse({
+        pos: startPos,
+        xScroll: xScrollOffset^,
+        yScroll: yScrollOffset^,
+        lastTime: Time.now(),
+        shiftKey,
+        startPos,
+        sceneOffsets,
+        maxXOffset,
+        maxYOffset,
+        textHeight,
+      });
+      if (shiftKey) {
+        dispatch(MoveAndSelect(startPos, cursorPosition));
+      } else {
+        dispatch(MoveAndSelect(startPos, startPos));
+      };
+    | _ => ()
+    };
 
   let handleDimensionsChanged =
       (dims: NodeEvents.DimensionsChangedEventParams.t) =>
