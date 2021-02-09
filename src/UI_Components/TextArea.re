@@ -116,11 +116,12 @@ type state = {
   value: string,
   cursorPosition: int,
   selectStart: option(int),
-  /* offsets: OffsetMap.t, */
+  offsets: OffsetMap.t,
 };
 
 type action =
-  | TextInput(string, int)
+  | TextInput(string, int, string => OffsetMap.t)
+  | RebuiltOffsets(OffsetMap.t)
   | Move(int)
   | MoveAndSelect(int, int)
   | MoveAndUnselect(int)
@@ -129,11 +130,13 @@ type action =
 
 let reducer = (action, state) =>
   switch (action) {
-  | TextInput(value, cursorPosition) => {
+  | TextInput(value, cursorPosition, offsetRefresher) => {
       value,
       cursorPosition,
       selectStart: None,
+      offsets: offsetRefresher(state.value),
     }
+  | RebuiltOffsets(offsets) => {...state, offsets}
   | Move(cursorPosition) => {...state, cursorPosition}
   | MoveAndSelect(cursorPosition, pos) => {
       ...state,
@@ -198,21 +201,27 @@ module Styles = {
     flexGrow(1),
   ];
 
-  let cursor = (~offset) => [
+  let cursor = (~x, ~y) => [
     position(`Absolute),
     marginTop(2),
-    transform(Transform.[TranslateX(float(offset))]),
+    transform(Transform.[TranslateX(x), TranslateY(y)]),
   ];
 
   let textContainer = [flexGrow(1), overflow(`Hidden)];
 
   let text =
-      (~showPlaceholder, ~scrollOffset, ~placeholderColor, ~color: Color.t) => [
+      (
+        ~showPlaceholder,
+        ~xScroll,
+        ~yScroll,
+        ~placeholderColor,
+        ~color: Color.t,
+      ) => [
     Style.color(showPlaceholder ? placeholderColor : color),
     alignItems(`Center),
     justifyContent(`FlexStart),
     textWrap(TextWrapping.NoWrap),
-    transform(Transform.[TranslateX(float(- scrollOffset^))]),
+    transform(Transform.[TranslateX(-. xScroll), TranslateY(-. yScroll)]),
   ];
 };
 
@@ -249,7 +258,6 @@ let%component make =
         ~fontSize,
         text,
       );
-
     dimensions.width;
   };
 
@@ -348,6 +356,24 @@ let%component make =
     List.fold_left(f, text, List.rev(OffsetMap.bindings(offsets)));
   };
 
+  let%hook textRef = Hooks.ref(None);
+  let%hook xScrollOffset = Hooks.ref(0.);
+  let%hook yScrollOffset = Hooks.ref(0.);
+  let%hook xCursorOffset = Hooks.ref(0.);
+  let%hook yCursorOffset = Hooks.ref(0.);
+
+  let (containerWidth, containerHeight) =
+    switch (Option.bind(textRef^, n => n#getParent())) {
+    | Some(node) =>
+      let container: Dimensions.t = (node#measurements(): Dimensions.t);
+      Float.(of_int(container.width), of_int(container.height));
+    | None =>
+      Float.(
+        of_int(Constants.defaultWidth),
+        of_int(Constants.defaultHeight),
+      )
+    };
+
   let%hook (state, dispatch) = {
     let value = Option.value(value, ~default="");
     Hooks.reducer(
@@ -355,17 +381,18 @@ let%component make =
         value,
         cursorPosition: Option.value(cursorPosition, ~default=0),
         selectStart: None,
+        offsets:
+          OffsetMap.build(
+            ~forceWrap,
+            ~lineHeight,
+            ~margin=containerWidth,
+            ~measure=measureTextWidth,
+            value,
+          ),
       },
       reducer,
     );
   };
-
-  let%hook textRef = Hooks.ref(None);
-  let%hook xScrollOffset = Hooks.ref(0.);
-  let%hook yScrollOffset = Hooks.ref(0.);
-  let%hook xCursorOffset = Hooks.ref(0.);
-  let%hook yCursorOffset = Hooks.ref(0.);
-  let%hook offsets = Hooks.ref(OffsetMap.empty);
 
   let color =
     Selector.select(style, Color, Some(Colors.black)) |> Option.get;
@@ -387,64 +414,41 @@ let%component make =
   let%hook (cursorOpacity, resetCursor) =
     Input.Cursor.use(~interval=Time.ms(500), ~isFocused=isFocused());
 
-  let updateOffsets = (~newValue=?, ~newCursor=?, ()) =>
-    switch (Option.bind(textRef^, n => n#getParent())) {
-    | Some(node) =>
-      let cursorPosition = {
-        let a = Option.value(~default=cursorPosition, newCursor);
-        let b = String.length(Option.value(~default=value, newValue));
-        a < b ? a : b;
-      };
-      let container: Dimensions.t = (node#measurements(): Dimensions.t);
-      let margin = Float.(of_int(container.width));
-      offsets :=
-        (
-          switch (newValue) {
-          | None =>
-            // When no new value is supplied, rebuild the whole map. (e.g. changed margin)
-            OffsetMap.build(
-              ~forceWrap,
-              ~lineHeight,
-              ~margin,
-              ~measure=measureTextWidth,
-              value,
-            )
-          | Some(v) =>
-            switch (OffsetMap.Utils.firstDiff(value, v)) {
-            | Some(from) =>
-              OffsetMap.refresh(
-                ~forceWrap,
-                ~lineHeight,
-                ~margin,
-                ~measure=measureTextWidth,
-                ~old=offsets^,
-                ~from,
-                v,
-              )
-            | None => offsets^
-            }
-          }
-        );
-      let (_, xOffset, yOffset) =
-        OffsetMap.findPosition(offsets^, cursorPosition);
-      xScrollOffset :=
-        horizontalScroll(
-          margin -. measureTextWidth("_"),
-          OffsetMap.maxXOffset(offsets^),
-          xOffset,
-          xScrollOffset^,
-        );
-      yScrollOffset :=
-        verticalScroll(
-          Float.of_int(container.height),
-          OffsetMap.maxYOffset(offsets^) +. lineHeight,
-          lineHeight,
-          yOffset,
-          yScrollOffset^,
-        );
-      xCursorOffset := xOffset;
-      yCursorOffset := yOffset;
-    | None => ()
+  let () = {
+    let (_, xOffset, yOffset) =
+      OffsetMap.findPosition(state.offsets, cursorPosition);
+    xScrollOffset :=
+      horizontalScroll(
+        containerWidth -. measureTextWidth("_"),
+        OffsetMap.maxXOffset(state.offsets),
+        xOffset,
+        xScrollOffset^,
+      );
+    yScrollOffset :=
+      verticalScroll(
+        containerHeight,
+        OffsetMap.maxYOffset(state.offsets) +. lineHeight,
+        lineHeight,
+        yOffset,
+        yScrollOffset^,
+      );
+    xCursorOffset := xOffset;
+    yCursorOffset := yOffset;
+  };
+
+  let offsetRefresher = newValue =>
+    switch (OffsetMap.Utils.firstDiff(value, newValue)) {
+    | Some(from) =>
+      OffsetMap.refresh(
+        ~forceWrap,
+        ~lineHeight,
+        ~margin=containerWidth,
+        ~measure=measureTextWidth,
+        ~old=state.offsets,
+        ~from,
+        newValue,
+      )
+    | None => state.offsets
     };
 
   let handleFocus = () => {
@@ -465,7 +469,7 @@ let%component make =
   // Refactor when https://github.com/briskml/brisk-reconciler/issues/54 has been fixed
   let update = (value, cursorPosition) => {
     onChange(value, cursorPosition);
-    dispatch(TextInput(value, cursorPosition));
+    dispatch(TextInput(value, cursorPosition, offsetRefresher));
   };
 
   let paste = (currentValue, currentCursorPosition) => {
@@ -532,11 +536,13 @@ let%component make =
       navigate(shift, cursorPosition);
     } else if (code == 1073741906) {
       // Up
-      let cursorPosition = verticalNav(~up=true, offsets^, cursorPosition);
+      let cursorPosition =
+        verticalNav(~up=true, state.offsets, cursorPosition);
       navigate(shift, cursorPosition);
     } else if (code == 1073741905) {
       // Down
-      let cursorPosition = verticalNav(~up=false, offsets^, cursorPosition);
+      let cursorPosition =
+        verticalNav(~up=false, state.offsets, cursorPosition);
       navigate(shift, cursorPosition);
     } else if (code == Keycode.delete) {
       let (value, cursorPosition) =
@@ -592,5 +598,76 @@ let%component make =
     };
   };
 
-  <View style={Styles.box(~style)} />;
+  let handleRef = node => {
+    clickableRef := Some(node);
+    if (autofocus) {
+      Focus.focus(node);
+    };
+  };
+
+  let handleDimensionsChanged =
+      (dims: NodeEvents.DimensionsChangedEventParams.t) =>
+    dispatch(
+      RebuiltOffsets(
+        OffsetMap.build(
+          ~forceWrap,
+          ~lineHeight,
+          ~margin=Float.of_int(dims.width),
+          ~measure=measureTextWidth,
+          value,
+        ),
+      ),
+    );
+
+  let cursor = () => {
+    let x = xCursorOffset^ -. xScrollOffset^;
+    let y = yCursorOffset^ -. yScrollOffset^;
+    <View style={Styles.cursor(~x, ~y)}>
+      <Opacity opacity=cursorOpacity>
+        <ContainerComponent
+          width=Constants.cursorWidth
+          height={fontSize |> int_of_float}
+          color=cursorColor
+        />
+      </Opacity>
+    </View>;
+  };
+
+  let text = () =>
+    <Text
+      ref={node => textRef := Some(node)}
+      text={newlineHack(state.offsets, value)}
+      fontFamily
+      fontWeight
+      italic
+      fontSize
+      underlined
+      smoothing
+      style={Styles.text(
+        ~showPlaceholder,
+        ~xScroll=xScrollOffset^,
+        ~yScroll=yScrollOffset^,
+        ~placeholderColor,
+        ~color,
+      )}
+    />;
+
+  <Clickable
+    onFocus=handleFocus
+    onBlur=handleBlur
+    componentRef=handleRef
+    /* onAnyClick=handleClick */
+    onKeyDown=handleKeyDown
+    onTextInput=handleTextInput>
+    <View style={Styles.box(~style)}>
+      <View style=Styles.marginContainer>
+        <View
+          style=Styles.textContainer
+          onDimensionsChanged=handleDimensionsChanged>
+          <text />
+        </View>
+        <cursor />
+      </View>
+    </View>
+  </Clickable>;
 };
