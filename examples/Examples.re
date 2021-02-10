@@ -200,6 +200,11 @@ let examples = [
     render: _ => WavFilePlaybackExample.render(),
     source: "WavFilePlaybackExample.re",
   },
+  {
+    name: "TextArea",
+    render: _ => TextAreaExample.render(),
+    source: "TextAreaExample.re",
+  },
 ];
 
 let getExampleByName = name =>
