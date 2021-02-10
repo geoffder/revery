@@ -179,10 +179,11 @@ let build =
         loop(next, row + 1, pos, empty, addRow(t, row, rowStart, offsets))
       | c when forceWrap && Float.(width > margin) =>
         loop(pos, row + 1, pos - 1, empty, addRow(t, row, rowStart, offsets))
-      // NOTE: untested. pos - rowStart could be one off correct index.
-      // xOffsets used to be a float list, hence the start field in Row.t.
+      // TODO: Having to subtract rowStart and 1 each time since offsets used
+      // to simply be a list, thus "indices" would always start from zero.
+      // should refactor to make it a bit less goofy.
       | c =>
-        loop(next, row, rowStart, add(pos - rowStart, width, offsets), t)
+        loop(next, row, rowStart, add(pos - rowStart - 1, width, offsets), t)
       };
     } else {
       addRow(t, row, rowStart, offsets);
