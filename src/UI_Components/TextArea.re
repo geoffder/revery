@@ -6,6 +6,8 @@ open Revery_Font;
 
 module Hooks = Revery_UI_Hooks;
 
+module Log = (val Timber.Log.withNamespace("TextArea"));
+
 let floatClampExn = (~min, ~max, a) => {
   if (min > max) {
     failwith("floatClampExn requires [min <= max]");
@@ -147,7 +149,7 @@ let reducer = (action, state) =>
       value,
       cursorPosition,
       selectStart: None,
-      offsets: offsetRefresher(state.value),
+      offsets: offsetRefresher(value),
     }
   | RebuiltOffsets(offsets) => {...state, offsets}
   | Move(cursorPosition) => {...state, cursorPosition}
@@ -210,7 +212,7 @@ module Styles = {
     alignItems(`Center),
     justifyContent(`FlexStart),
     marginLeft(Constants.textMargin),
-    marginRight(Constants.textMargin),
+    /* marginRight(Constants.textMargin), */
     flexGrow(1),
   ];
 
@@ -233,7 +235,7 @@ module Styles = {
     Style.color(showPlaceholder ? placeholderColor : color),
     alignItems(`Center),
     justifyContent(`FlexStart),
-    textWrap(TextWrapping.NoWrap),
+    textWrap(TextWrapping.WrapIgnoreWhitespace),
     transform(Transform.[TranslateX(-. xScroll), TranslateY(-. yScroll)]),
   ];
 };
@@ -274,13 +276,6 @@ let%component make =
     dimensions.width;
   };
 
-  // NOTE: in the bonsai code, line height is multiplied by lineHeight from the node style,
-  // retrieved by `let style : UI.Style.t = node#getStyle ()`. May have to do something
-  // similar? Can I really supply this as a configuration value then?
-  let lineHeight = {
-    Revery_Draw.Text.lineHeight(~italic, fontFamily, fontSize, fontWeight);
-  };
-
   let verticalScroll =
       (containerHeight, textHeight, lineHeight, yOffset, yScroll) =>
     if (Float.compare(textHeight, containerHeight) > 0) {
@@ -307,7 +302,6 @@ let%component make =
       let offset =
         if (Float.compare(xOffset, xScroll) < 0) {
           xOffset;
-          /* } else if (xOffset - xScroll > margin) { */
         } else if (Float.compare(xOffset -. xScroll, margin) > 0) {
           xOffset -. margin;
         } else {
@@ -374,6 +368,17 @@ let%component make =
   let%hook yScrollOffset = Hooks.ref(0.);
   let%hook xCursorOffset = Hooks.ref(0.);
   let%hook yCursorOffset = Hooks.ref(0.);
+
+  let lineHeight = {
+    let h =
+      Revery_Draw.Text.lineHeight(~italic, fontFamily, fontSize, fontWeight);
+    switch (textRef^) {
+    | Some(node) =>
+      let style: Style.t = node#getStyle();
+      h *. style.lineHeight;
+    | None => h
+    };
+  };
 
   let (containerWidth, containerHeight) =
     switch (Option.bind(textRef^, n => n#getParent())) {
@@ -621,9 +626,8 @@ let%component make =
   let handleMouseMove =
       (dragState, {mouseX, mouseY, _}: NodeEvents.mouseMoveEventParams) => {
     let thisTime = Time.now();
-    if (Float.compare(
-          Time.(toFloatSeconds(thisTime - dragState.lastTime)),
-          16.,
+    if ((Float.compare(Time.(toFloatSeconds(thisTime - dragState.lastTime))))(.
+          0.016,
         )
         == 1) {
       let (_, xOffset, yOffset) =
@@ -635,7 +639,6 @@ let%component make =
           xOffset,
           dragState.xScroll,
         );
-
       let yScroll =
         verticalScroll(
           containerHeight,
@@ -651,9 +654,9 @@ let%component make =
       let pos =
         OffsetMap.nearestPosition(state.offsets, xTextOffset, yTextOffset)
         |> Option.value(~default=String.length(value));
-      dispatch(Move(pos));
       xScrollOffset := xScroll;
       yScrollOffset := yScroll;
+      dispatch(Move(pos));
       Some({...dragState, pos, xScroll, yScroll, lastTime: thisTime});
     } else {
       Some(dragState);
@@ -690,7 +693,19 @@ let%component make =
       let maxYOffset = OffsetMap.maxYOffset(state.offsets);
       let textHeight = maxYOffset +. lineHeight;
 
+      /* Log.debug( */
+      /*   Printf.sprintf( */
+      /*     "pos %i; mX %.2f; mY %.2f, xTex %.2f, yTex %.2f", */
+      /*     startPos, */
+      /*     mouseX, */
+      /*     mouseY, */
+      /*     xTextOffset, */
+      /*     yTextOffset, */
+      /*   ), */
+      /* ); */
+
       Option.iter(Focus.focus, clickableRef^);
+      resetCursor();
       captureMouse({
         pos: startPos,
         xScroll: xScrollOffset^,
@@ -762,11 +777,15 @@ let%component make =
     onFocus=handleFocus
     onBlur=handleBlur
     componentRef=handleRef
-    /* onAnyClick=handleClick */
     onKeyDown=handleKeyDown
     onTextInput=handleTextInput>
     <View style={Styles.box(~style)}>
-      <View style=Styles.marginContainer>
+      <View
+        onMouseDown=handleMouseDown
+        style=[
+          Style.marginRight(Int.of_float(measureTextWidth("_"))),
+          ...Styles.marginContainer,
+        ]>
         <View
           style=Styles.textContainer
           onDimensionsChanged=handleDimensionsChanged>
