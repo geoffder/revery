@@ -168,7 +168,7 @@ let reducer = (action, state) =>
   };
 
 module Constants = {
-  let defaultHeight = 50;
+  let defaultHeight = 100;
   let defaultWidth = 200;
   let textMargin = 10;
   let cursorWidth = 2;
@@ -698,17 +698,6 @@ let%component make =
       let maxYOffset = OffsetMap.maxYOffset(state.offsets);
       let textHeight = maxYOffset +. lineHeight;
 
-      /* Log.debug( */
-      /*   Printf.sprintf( */
-      /*     "pos %i; mX %.2f; mY %.2f, xTex %.2f, yTex %.2f", */
-      /*     startPos, */
-      /*     mouseX, */
-      /*     mouseY, */
-      /*     xTextOffset, */
-      /*     yTextOffset, */
-      /*   ), */
-      /* ); */
-
       Option.iter(Focus.focus, clickableRef^);
       resetCursor();
       captureMouse({
@@ -800,23 +789,24 @@ let%component make =
         let (startLine, firstX, firstY) =
           OffsetMap.findPosition(state.offsets, first);
         let (_, lastX, lastY) = OffsetMap.findPosition(state.offsets, last);
+        let firstXOffset = firstX -. xScrollOffset^;
+        let firstYOffset = firstY -. yScrollOffset^;
         let widths = OffsetMap.rowWidths(state.offsets);
         let striper = (from, n) => {
           let rec loop = (i, acc) =>
             if (i < n) {
-              [
-                stripe(
-                  ~len=OffsetMap.find(from + i, widths),
-                  ~h=lineHeight,
-                  ~x=0.,
-                  ~y=
-                    firstY
-                    -. yScrollOffset^
-                    +. Float.of_int(i + 1)
-                    *. lineHeight,
-                ),
-                ...acc,
-              ];
+              loop(
+                i + 1,
+                [
+                  stripe(
+                    ~len=OffsetMap.find(from + i, widths),
+                    ~h=lineHeight,
+                    ~x=0.,
+                    ~y=firstYOffset +. Float.of_int(i + 1) *. lineHeight,
+                  ),
+                  ...acc,
+                ],
+              );
             } else {
               acc;
             };
@@ -827,26 +817,25 @@ let%component make =
             stripe(
               ~len=lastX -. firstX,
               ~h=lineHeight,
-              ~x=firstX -. xScrollOffset^,
-              ~y=firstY -. yScrollOffset^,
+              ~x=firstXOffset,
+              ~y=firstYOffset,
             ),
           ]
+        // ordering doesn't matter here (non-overlapping absolute positioning)
         | n => [
             stripe(
               ~len=OffsetMap.find(startLine, widths) -. firstX,
               ~h=lineHeight,
-              ~x=firstX -. xScrollOffset^,
-              ~y=firstY -. yScrollOffset^,
+              ~x=firstXOffset,
+              ~y=firstYOffset,
             ),
-            ...List.rev([
-                 stripe(
-                   ~len=lastX,
-                   ~h=lineHeight,
-                   ~x=0.,
-                   ~y=lastY -. yScrollOffset^,
-                 ),
-                 ...striper(startLine + 1, n - 1),
-               ]),
+            stripe(
+              ~len=lastX,
+              ~h=lineHeight,
+              ~x=0.,
+              ~y=lastY -. yScrollOffset^,
+            ),
+            ...striper(startLine + 1, n - 1),
           ]
         };
       | _ => []
