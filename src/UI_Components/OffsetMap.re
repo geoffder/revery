@@ -287,12 +287,12 @@ let maxYOffset = (t: t) => {
 };
 
 let rowWidths = (t: t) =>
-  List.map(
-    (_, Row.{xOffsets, _}) => {
+  map(
+    (Row.{xOffsets, _}) => {
       switch (max_binding_opt(xOffsets)) {
       | None => 0.
       | Some((_, width)) => width
       }
     },
-    bindings(t),
+    t,
   );
