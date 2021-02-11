@@ -276,6 +276,8 @@ let%component make =
     dimensions.width;
   };
 
+  let maxCharWidth = measureTextWidth("_");
+
   let verticalScroll =
       (containerHeight, textHeight, lineHeight, yOffset, yScroll) =>
     if (Float.compare(textHeight, containerHeight) > 0) {
@@ -437,7 +439,7 @@ let%component make =
       OffsetMap.findPosition(state.offsets, cursorPosition);
     xScrollOffset :=
       horizontalScroll(
-        containerWidth -. measureTextWidth("_"),
+        containerWidth -. maxCharWidth,
         OffsetMap.maxXOffset(state.offsets),
         xOffset,
         xScrollOffset^,
@@ -634,7 +636,7 @@ let%component make =
         OffsetMap.findPosition(state.offsets, dragState.pos);
       let xScroll =
         horizontalScroll(
-          containerWidth -. measureTextWidth("_"),
+          containerWidth -. maxCharWidth,
           dragState.maxXOffset,
           xOffset,
           dragState.xScroll,
@@ -783,7 +785,9 @@ let%component make =
       <View
         onMouseDown=handleMouseDown
         style=[
-          Style.marginRight(Int.of_float(measureTextWidth("_"))),
+          Style.marginRight(
+            Int.of_float(maxCharWidth) + Constants.textMargin,
+          ),
           ...Styles.marginContainer,
         ]>
         <View
