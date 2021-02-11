@@ -179,6 +179,7 @@ module Styles = {
 
   let defaultPlaceholderColor = Colors.grey;
   let defaultCursorColor = Colors.black;
+  let defaultHighlightColor = Colors.blueViolet;
 
   let default = [
     color(Colors.black),
@@ -251,6 +252,8 @@ let%component make =
                 ~underlined=false,
                 ~placeholderColor=Styles.defaultPlaceholderColor,
                 ~cursorColor=Styles.defaultCursorColor,
+                ~highlightColor=Styles.defaultHighlightColor,
+                ~highlightOpacity=0.5,
                 ~autofocus=false,
                 ~placeholder="",
                 ~onFocus=() => (),
@@ -775,6 +778,83 @@ let%component make =
       )}
     />;
 
+  let stripe = (~len, ~h, ~x, ~y) => {
+    <View
+      style=Style.[
+        opacity(highlightOpacity),
+        width(Int.of_float(len)),
+        height(Int.of_float(h)),
+        backgroundColor(highlightColor),
+        position(`Absolute),
+        transform(Transform.[TranslateX(x), TranslateY(y)]),
+      ]
+    />;
+  };
+
+  let highlights = () => {
+    (
+      switch (state.selectStart, Option.bind(textRef^, n => n#getParent())) {
+      | (Some(start), Some(node)) =>
+        let first = cursorPosition < start ? cursorPosition : start;
+        let last = cursorPosition > start ? cursorPosition : start;
+        let (startLine, firstX, firstY) =
+          OffsetMap.findPosition(state.offsets, first);
+        let (_, lastX, lastY) = OffsetMap.findPosition(state.offsets, last);
+        let widths = OffsetMap.rowWidths(state.offsets);
+        let striper = (from, n) => {
+          let rec loop = (i, acc) =>
+            if (i < n) {
+              [
+                stripe(
+                  ~len=OffsetMap.find(from + i, widths),
+                  ~h=lineHeight,
+                  ~x=0.,
+                  ~y=
+                    firstY
+                    -. yScrollOffset^
+                    +. Float.of_int(i + 1)
+                    *. lineHeight,
+                ),
+                ...acc,
+              ];
+            } else {
+              acc;
+            };
+          loop(0, []);
+        };
+        switch (Int.of_float((lastY -. firstY) /. lineHeight)) {
+        | 0 => [
+            stripe(
+              ~len=lastX -. firstX,
+              ~h=lineHeight,
+              ~x=firstX -. xScrollOffset^,
+              ~y=firstY -. yScrollOffset^,
+            ),
+          ]
+        | n => [
+            stripe(
+              ~len=OffsetMap.find(startLine, widths) -. firstX,
+              ~h=lineHeight,
+              ~x=firstX -. xScrollOffset^,
+              ~y=firstY -. yScrollOffset^,
+            ),
+            ...List.rev([
+                 stripe(
+                   ~len=lastX,
+                   ~h=lineHeight,
+                   ~x=0.,
+                   ~y=lastY -. yScrollOffset^,
+                 ),
+                 ...striper(startLine + 1, n - 1),
+               ]),
+          ]
+        };
+      | _ => []
+      }
+    )
+    |> React.listToElement;
+  };
+
   <Clickable
     onFocus=handleFocus
     onBlur=handleBlur
@@ -795,6 +875,7 @@ let%component make =
           onDimensionsChanged=handleDimensionsChanged>
           <text />
         </View>
+        <highlights />
         <cursor />
       </View>
     </View>
