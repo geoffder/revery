@@ -114,13 +114,6 @@ let copySelected = (text, p1, p2) => {
   Sdl2.Clipboard.setText(String.sub(text, first, last - first));
 };
 
-type state = {
-  value: string,
-  cursorPosition: int,
-  selectStart: option(int),
-  offsets: OffsetMap.t,
-};
-
 type dragState = {
   pos: int,
   xScroll: float,
@@ -134,8 +127,15 @@ type dragState = {
   textHeight: float,
 };
 
+type state = {
+  value: string,
+  cursorPosition: int,
+  selectStart: option(int),
+  offsets: OffsetMap.t,
+};
+
 type action =
-  | TextInput(string, int, string => OffsetMap.t)
+  | TextInput(string, int, OffsetMap.t)
   | RebuiltOffsets(OffsetMap.t)
   | Move(int)
   | MoveAndSelect(int, int)
@@ -145,11 +145,11 @@ type action =
 
 let reducer = (action, state) =>
   switch (action) {
-  | TextInput(value, cursorPosition, offsetRefresher) => {
+  | TextInput(value, cursorPosition, offsets) => {
       value,
       cursorPosition,
       selectStart: None,
-      offsets: offsetRefresher(value),
+      offsets,
     }
   | RebuiltOffsets(offsets) => {...state, offsets}
   | Move(cursorPosition) => {...state, cursorPosition}
@@ -168,8 +168,9 @@ let reducer = (action, state) =>
   };
 
 module Constants = {
-  let defaultHeight = 100;
-  let defaultWidth = 200;
+  let defaultMinHeight = 0;
+  let defaultMaxHeight = 100;
+  let defaultWidth = 500;
   let textMargin = 10;
   let cursorWidth = 2;
 };
@@ -184,12 +185,9 @@ module Styles = {
   let default = [
     color(Colors.black),
     width(Constants.defaultWidth),
-    height(Constants.defaultHeight),
-    border(
-      // The default border width should be 5% of the full input height
-      ~width=float_of_int(Constants.defaultHeight) *. 0.05 |> int_of_float,
-      ~color=Colors.black,
-    ),
+    minHeight(Constants.defaultMinHeight),
+    maxHeight(Constants.defaultMaxHeight),
+    border(~width=3, ~color=Colors.black),
     backgroundColor(Colors.transparentWhite),
   ];
 
@@ -213,7 +211,7 @@ module Styles = {
     alignItems(`Center),
     justifyContent(`FlexStart),
     marginLeft(Constants.textMargin),
-    /* marginRight(Constants.textMargin), */
+    // NOTE: marginRight is finalized later using a char width fudge factor.
     flexGrow(1),
   ];
 
@@ -238,6 +236,7 @@ module Styles = {
     justifyContent(`FlexStart),
     textWrap(TextWrapping.WrapIgnoreWhitespace),
     transform(Transform.[TranslateX(-. xScroll), TranslateY(-. yScroll)]),
+    flexGrow(1),
   ];
 };
 
@@ -262,10 +261,12 @@ let%component make =
                 ~onChange=(_, _) => (),
                 ~value=?,
                 ~cursorPosition=?,
-                ~maxHeight=Int.max_int,
                 ~forceWrap=true,
                 (),
               ) => {
+  let%hook firstRender = Hooks.ref(true);
+  let%hook previousValue = Hooks.ref(value);
+
   let measureTextWidth = text => {
     let dimensions =
       Revery_Draw.Text.dimensions(
@@ -393,7 +394,7 @@ let%component make =
     | None =>
       Float.(
         of_int(Constants.defaultWidth),
-        of_int(Constants.defaultHeight),
+        of_int(Constants.defaultMinHeight),
       )
     };
 
@@ -420,11 +421,44 @@ let%component make =
   let color =
     Selector.select(style, Color, Some(Colors.black)) |> Option.get;
 
-  let value = Option.value(value, ~default=state.value);
+  let (value, cursorPosition, offsets) =
+    switch (value) {
+    | Some(setValue)
+        when
+          firstRender^ || !Option.equal(String.equal, previousValue^, value) =>
+      previousValue := value;
+      firstRender := false;
+      let margin =
+        Option.bind(textRef^, n => n#getParent())
+        |> Option.map(n =>
+             Float.of_int((n#measurements(): Dimensions.t).width)
+           )
+        |> Option.value(~default=containerWidth);
+      let offsets =
+        OffsetMap.build(
+          ~forceWrap,
+          ~lineHeight,
+          ~margin,
+          ~measure=measureTextWidth,
+          setValue,
+        );
+      dispatch(TextInput(setValue, String.length(setValue), offsets));
+      (
+        setValue,
+        Option.value(cursorPosition, ~default=String.length(setValue)),
+        OffsetMap.build(
+          ~forceWrap,
+          ~lineHeight,
+          ~margin,
+          ~measure=measureTextWidth,
+          setValue,
+        ),
+      );
+    | _ => (state.value, state.cursorPosition, state.offsets)
+    };
+
   let showPlaceholder = value == "";
-  let cursorPosition =
-    Option.value(cursorPosition, ~default=state.cursorPosition)
-    |> min(String.length(value));
+  let cursorPosition = min(cursorPosition, String.length(value));
 
   let%hook clickableRef = Hooks.ref(None);
   let isFocused = () => {
@@ -439,18 +473,18 @@ let%component make =
 
   let () = {
     let (_, xOffset, yOffset) =
-      OffsetMap.findPosition(state.offsets, cursorPosition);
+      OffsetMap.findPosition(offsets, cursorPosition);
     xScrollOffset :=
       horizontalScroll(
         containerWidth -. maxCharWidth,
-        OffsetMap.maxXOffset(state.offsets),
+        OffsetMap.maxXOffset(offsets),
         xOffset,
         xScrollOffset^,
       );
     yScrollOffset :=
       verticalScroll(
         containerHeight,
-        OffsetMap.maxYOffset(state.offsets) +. lineHeight,
+        OffsetMap.maxYOffset(offsets) +. lineHeight,
         lineHeight,
         yOffset,
         yScrollOffset^,
@@ -467,11 +501,11 @@ let%component make =
         ~lineHeight,
         ~margin=containerWidth,
         ~measure=measureTextWidth,
-        ~old=state.offsets,
+        ~old=offsets,
         ~from,
         newValue,
       )
-    | None => state.offsets
+    | None => offsets
     };
 
   let handleFocus = () => {
@@ -492,7 +526,7 @@ let%component make =
   // Refactor when https://github.com/briskml/brisk-reconciler/issues/54 has been fixed
   let update = (value, cursorPosition) => {
     onChange(value, cursorPosition);
-    dispatch(TextInput(value, cursorPosition, offsetRefresher));
+    dispatch(TextInput(value, cursorPosition, offsetRefresher(value)));
   };
 
   let paste = (currentValue, currentCursorPosition) => {
@@ -559,13 +593,11 @@ let%component make =
       navigate(shift, cursorPosition);
     } else if (code == 1073741906) {
       // Up
-      let cursorPosition =
-        verticalNav(~up=true, state.offsets, cursorPosition);
+      let cursorPosition = verticalNav(~up=true, offsets, cursorPosition);
       navigate(shift, cursorPosition);
     } else if (code == 1073741905) {
       // Down
-      let cursorPosition =
-        verticalNav(~up=false, state.offsets, cursorPosition);
+      let cursorPosition = verticalNav(~up=false, offsets, cursorPosition);
       navigate(shift, cursorPosition);
     } else if (code == Keycode.delete) {
       let (value, cursorPosition) =
@@ -631,12 +663,13 @@ let%component make =
   let handleMouseMove =
       (dragState, {mouseX, mouseY, _}: NodeEvents.mouseMoveEventParams) => {
     let thisTime = Time.now();
-    if ((Float.compare(Time.(toFloatSeconds(thisTime - dragState.lastTime))))(.
+    if (Float.compare(
+          Time.(toFloatSeconds(thisTime - dragState.lastTime)),
           0.016,
         )
         == 1) {
       let (_, xOffset, yOffset) =
-        OffsetMap.findPosition(state.offsets, dragState.pos);
+        OffsetMap.findPosition(offsets, dragState.pos);
       let xScroll =
         horizontalScroll(
           containerWidth -. maxCharWidth,
@@ -657,7 +690,7 @@ let%component make =
       let yTextOffset =
         mouseY -. Float.of_int(dragState.sceneOffsets.top) +. yScroll;
       let pos =
-        OffsetMap.nearestPosition(state.offsets, xTextOffset, yTextOffset)
+        OffsetMap.nearestPosition(offsets, xTextOffset, yTextOffset)
         |> Option.value(~default=String.length(value));
       xScrollOffset := xScroll;
       yScrollOffset := yScroll;
@@ -692,10 +725,10 @@ let%component make =
       let yTextOffset =
         mouseY -. Float.of_int(sceneOffsets.top) +. yScrollOffset^;
       let startPos =
-        OffsetMap.nearestPosition(state.offsets, xTextOffset, yTextOffset)
+        OffsetMap.nearestPosition(offsets, xTextOffset, yTextOffset)
         |> Option.value(~default=String.length(value));
-      let maxXOffset = OffsetMap.maxXOffset(state.offsets);
-      let maxYOffset = OffsetMap.maxYOffset(state.offsets);
+      let maxXOffset = OffsetMap.maxXOffset(offsets);
+      let maxYOffset = OffsetMap.maxYOffset(offsets);
       let textHeight = maxYOffset +. lineHeight;
 
       Option.iter(Focus.focus, clickableRef^);
@@ -751,7 +784,7 @@ let%component make =
   let text = () =>
     <Text
       ref={node => textRef := Some(node)}
-      text={newlineHack(state.offsets, value)}
+      text={newlineHack(offsets, value)}
       fontFamily
       fontWeight
       italic
@@ -787,12 +820,12 @@ let%component make =
         let first = cursorPosition < start ? cursorPosition : start;
         let last = cursorPosition > start ? cursorPosition : start;
         let (startLine, firstX, firstY) =
-          OffsetMap.findPosition(state.offsets, first);
-        let (_, lastX, lastY) = OffsetMap.findPosition(state.offsets, last);
+          OffsetMap.findPosition(offsets, first);
+        let (_, lastX, lastY) = OffsetMap.findPosition(offsets, last);
         let firstXOffset = firstX -. xScrollOffset^;
         let firstYOffset = firstY -. yScrollOffset^;
-        let widths = OffsetMap.rowWidths(state.offsets);
-        let striper = (from, n) => {
+        let widths = OffsetMap.rowWidths(offsets);
+        let fullLineStriper = (from, n) => {
           let rec loop = (i, acc) =>
             if (i < n) {
               loop(
@@ -835,7 +868,7 @@ let%component make =
               ~x=0.,
               ~y=lastY -. yScrollOffset^,
             ),
-            ...striper(startLine + 1, n - 1),
+            ...fullLineStriper(startLine + 1, n - 1),
           ]
         };
       | _ => []
