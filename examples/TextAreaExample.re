@@ -14,14 +14,6 @@ let containerStyle =
     flexDirection(`Column),
   ];
 
-let controlsStyle =
-  Style.[
-    margin(10),
-    flexDirection(`Row),
-    justifyContent(`Center),
-    alignItems(`Center),
-  ];
-
 let textStyle =
   Style.[
     color(Colors.white),
@@ -31,103 +23,39 @@ let textStyle =
   ];
 
 module Example = {
-  type inputFields = {
-    first: string,
-    second: string,
-    third: string,
-    isPassword: bool,
-  };
+  type state = {text: string};
 
   let%component make = () => {
-    let%hook ({first, isPassword, _}, setValue) =
-      Hooks.state({first: "", second: "", third: "", isPassword: false});
+    let%hook ({text}, setValue) = Hooks.state({text: ""});
 
     <View style=containerStyle>
       <View
         style=Style.[
-          flexDirection(`Row),
+          flexDirection(`Column),
+          flexGrow(1),
           alignItems(`Center),
           justifyContent(`Center),
         ]>
         <TextArea
+          style={List.rev(
+            Style.[
+              backgroundColor(Colors.white),
+              marginBottom(10),
+              ...TextArea.Styles.default,
+            ],
+          )}
           placeholder="Insert text here"
-          onChange={(value, _) =>
-            setValue(state => {...state, first: value})
-          }
-          value=first
+          onChange={(value, _) => setValue(state => {text: value})}
+          value=text
         />
         <Button
           height=50
           width=100
           fontSize=15.
           title="Reset"
-          onClick={() => setValue(state => {...state, first: ""})}
-        />
-        <Button
-          height=50
-          width=100
-          fontSize=15.
-          title="Set value"
-          onClick={() => setValue(state => {...state, first: "New value"})}
+          onClick={() => setValue(state => {text: ""})}
         />
       </View>
-      <Padding padding=20>
-        <View
-          style=Style.[
-            flexDirection(`Row),
-            alignItems(`Center),
-            justifyContent(`Center),
-          ]>
-          <Input
-            placeholder="Insert text here"
-            onChange={(value, _) =>
-              setValue(state => {...state, first: value})
-            }
-            value=first
-            isPassword
-          />
-          <View style=controlsStyle>
-            <Text fontSize=16. style=textStyle text="Obscure Input" />
-            <Checkbox
-              checkedColor=Colors.green
-              onChange={() =>
-                setValue(state => {...state, isPassword: !state.isPassword})
-              }
-              style=Style.[border(~width=2, ~color=Colors.green)]
-              checked=isPassword
-            />
-          </View>
-        </View>
-      </Padding>
-      <Padding padding=20>
-        <BoxShadow
-          boxShadow={Style.BoxShadow.make(
-            ~xOffset=-5.,
-            ~yOffset=2.,
-            ~color=Colors.black,
-            ~blurRadius=20.,
-            ~spreadRadius=0.,
-            (),
-          )}>
-          <Input
-            placeholder="custom input"
-            placeholderColor=Colors.plum
-            cursorColor=Colors.white
-            autofocus=true
-            onFocus={() => Console.log("Input example focused")}
-            onBlur={() => Console.log("Input example blurred")}
-            onChange={(value, _) =>
-              setValue(state => {...state, second: value})
-            }
-            onKeyDown={event => Console.log(event)}
-            style=Style.[
-              backgroundColor(Colors.paleVioletRed),
-              color(Colors.white),
-              height(50),
-            ]
-          />
-        </BoxShadow>
-      </Padding>
     </View>;
   };
 };
