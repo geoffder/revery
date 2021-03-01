@@ -114,6 +114,8 @@ let copySelected = (text, p1, p2) => {
   Sdl2.Clipboard.setText(String.sub(text, first, last - first));
 };
 
+let empty = React.empty;
+
 type dragState = {
   pos: int,
   xScroll: float,
@@ -253,6 +255,9 @@ let%component make =
                 ~cursorColor=Styles.defaultCursorColor,
                 ~highlightColor=Styles.defaultHighlightColor,
                 ~highlightOpacity=0.5,
+                ~scrollBarThickness=10,
+                ~scrollTrackColor=Color.rgba(0.0, 0.0, 0.0, 0.4),
+                ~scrollThumbColor=Color.rgba(0.5, 0.5, 0.5, 0.4),
                 ~autofocus=false,
                 ~placeholder="",
                 ~onFocus=() => (),
@@ -876,6 +881,54 @@ let%component make =
     )
     |> React.listToElement;
   };
+
+  let (verticalScrollBar, scroll) =
+    switch (textRef^) {
+    | Some(textNode) =>
+      let textHeight = textNode#measurements().height;
+      let containerHeight = Int.of_float(containerHeight);
+      let maxHeight = max(0, textHeight - containerHeight);
+
+      let verticalThumbHeight =
+        textHeight > 0 ? containerHeight * containerHeight / textHeight : 1;
+
+      let isVerticalScrollBarVisible = maxHeight > 0;
+
+      let verticalScrollBar =
+        isVerticalScrollBarVisible
+          ? <Slider
+              onValueChanged={v =>
+                scrollYdispatch(ScrollUpdated(int_of_float(v)))
+              }
+              minimumValue=0.
+              maximumValue={float_of_int(maxHeight)}
+              sliderLength=containerHeight
+              thumbLength=verticalThumbHeight
+              value={float_of_int(actualScrollTop)}
+              trackThickness=scrollBarThickness
+              thumbThickness=scrollBarThickness
+              minimumTrackColor=scrollTrackColor
+              maximumTrackColor=scrollTrackColor
+              thumbColor=scrollThumbColor
+              vertical=true
+            />
+          : empty;
+
+      let scroll = (wheelEvent: NodeEvents.mouseWheelEventParams) =>
+        if (isVerticalScrollBarVisible) {
+          handleScroll(
+            ~deltaValue=wheelEvent.deltaY,
+            ~bounce,
+            ~scrollPosition=actualScrollTop,
+            ~maxScrollValue=maxHeight,
+            ~bouncingState=bouncingStateY,
+            ~setBouncingState=setBouncingStateY,
+            ~scrollDispatch=scrollYdispatch,
+          );
+        };
+      (verticalScrollBar, scroll);
+    | _ => (empty, (_ => ()))
+    };
 
   <Clickable
     onFocus=handleFocus
